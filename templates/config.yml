@@ -1,0 +1,9 @@
+h: <Number of hash functions to use, e.g., 2>
+k: <K-mer size, e.g., 11>
+m: <Bloom filter size, e.g., 100000000>
+nproc: <Number of CPU cores to use, e.g., 64>
+max_memory: <Maximum amount of RAM to use, e.g., 60GiB>
+sequence_type: <aminoacid or nucleotide>
+output_directory: <path/to/the/output/directory>
+matrix_store_name: <metaprofi_bfmatrix>
+index_store_name: <metaprofi_index>

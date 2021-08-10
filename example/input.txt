@@ -1,0 +1,3 @@
+24D_degrading_bacterium_TFD23: metaprofi/example/uniprot_sample_data/24D_degrading_bacterium_TFD23.fasta       
+Abditibacterium_utsteinense: metaprofi/example/uniprot_sample_data/Abditibacterium_utsteinense.fasta 
+Abiotrophia_defectiva_ATCC_49176: metaprofi/example/uniprot_sample_data/Abiotrophia_defectiva_ATCC_49176.fasta

@@ -1,0 +1,9 @@
+h: 1
+k: 31
+m: 40000000000
+nproc: 64
+max_memory: 60GiB
+sequence_type: nucleotide
+output_directory: /benchmarks/tara_oceans/
+matrix_store_name: metaprofi_tara_oceans_bf_matrix
+index_store_name: metaprofi_tara_oceans_index

@@ -1,0 +1,9 @@
+h: 1
+k: 21
+m: 2000000000
+nproc: 64
+max_memory: 60GiB
+sequence_type: nucleotide
+output_directory: /benchmarks/rna_seq/
+matrix_store_name: metaprofi_rna_seq_bf_matrix
+index_store_name: metaprofi_rna_seq_index

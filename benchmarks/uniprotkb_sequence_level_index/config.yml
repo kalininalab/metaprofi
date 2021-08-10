@@ -1,0 +1,9 @@
+h: 2
+k: 11
+m: 600000
+nproc: 64
+max_memory: 60GiB
+sequence_type: aminoacid
+output_directory: /benchmarks/uniprotkb_sequence_level/
+matrix_store_name: metaprofi_uniprotkb_seq_matrix
+index_store_name: metaprofi_uniprotkb_seq_index
