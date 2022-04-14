@@ -51,7 +51,7 @@ _BF: Bloom filter, Disk total: total storage used for BF, index and intermediate
     ``` bash
     pyfastx sample /data/rna_seq/query/refMrna.fa.gz -n 1000 -o /data/rna_seq/query/query_1000.fa
     ```
-* Query reads can be found [here](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/query_1000.fa)
+* Query reads can be found [here](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_mini_index/query_1000.fa)
 
 | Tool | RAM (GiB) | CPU cores | Time (s) (T = 100) | Time (s) (T = 75) |
 | --- | --- | --- | --- | --- |
@@ -125,7 +125,7 @@ kmtricks query --run-dir ./benchmarks/kmtricks_rna_seq_mini/ --query /data/rna_s
 
 
 #### MetaProFi
-- [config](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/config.yml) file was created
+- [config](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_mini_index/config.yml) file was created
 
 ``` bash
 # Activate conda environment
