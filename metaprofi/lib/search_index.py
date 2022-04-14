@@ -1,13 +1,12 @@
 """MetaProFi index search module
 """
 
-import itertools
+from collections import defaultdict
 import math
 import os
 import sys
 from datetime import datetime
 from multiprocessing import Manager, Process
-from operator import itemgetter
 import numpy as np
 import zarr
 from metaprofi.lib.bloomfilter_cython import sequence_to_hash_cython
@@ -24,8 +23,10 @@ from metaprofi.lib.utilities import (
     cleanup_file,
     splitjobs,
     zstd_decompress,
+    MemoryMappedDirectoryStore,
 )
-from metaprofi.lib.lmdb_index import LMDBStore
+from metaprofi.lib.lmdb_faq_index import LMDBFAQStore
+from metaprofi.lib.lmdb_kvstore import LMDBKVStore
 
 
 def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=True):
@@ -58,13 +59,19 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
     output_dir = config["output_directory"]
 
     # Index store
-    index_store = zarr.open(index_store_dir, mode="r")
+    mmaped_store = MemoryMappedDirectoryStore(index_store_dir)
+    index_store = zarr.open(mmaped_store, mode="r")
 
     # Index store datasets
     index_dataset = index_store.get(BLOOMFILTER_INDEX_DATASET_NAME)
     index_metadata_dataset = index_store.get(METADATA_DATASET_NAME)
     index_endianness = index_metadata_dataset.attrs["endianness"]
     current_endianness = sys.byteorder
+
+    # Add some metadata to the config which will be used later
+    config["nrows"] = index_dataset.shape[0]
+    config["nchunks"] = index_dataset.nchunks
+    config["chunk_size"] = index_dataset.chunks[0]
 
     # Validate config with config stored in index store
     index_store_config = [
@@ -154,20 +161,20 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
     # Scenario 2: One Fasta/Fastq file with 1 or more sequence(s)
     # Create a LMDB index for the query file
     query = os.path.abspath(query)
-    lmdb_folder = f"{config['output_directory']}/{os.path.splitext(os.path.basename(query))[0]}.lmdb"
+    lmdb_faq_folder = f"{config['output_directory']}/{os.path.splitext(os.path.basename(query))[0]}_faqi.lmdb"
 
     # Remove the index if it already exists
-    cleanup_dir(lmdb_folder)
+    cleanup_dir(lmdb_faq_folder)
 
     # Create the index
-    lmdb_handle = LMDBStore(lmdb_folder, config["k"])
-    lmdb_handle.build_index(query)
-    lmdb_handle.flush()
-    lmdb_handle.close()
+    lmdb_faq_handle = LMDBFAQStore(lmdb_faq_folder, config["k"])
+    lmdb_faq_handle.build_index(query)
+    lmdb_faq_handle.flush()
+    lmdb_faq_handle.close()
 
     # Re-open LMDB index in readonly mode (for parallel reads)
-    lmdb_handle = LMDBStore(
-        lmdb_folder,
+    lmdb_faq_handle = LMDBFAQStore(
+        lmdb_faq_folder,
         config["k"],
         readonly=True,
         lock=False,
@@ -185,17 +192,17 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
             cleanup_file(orfs_filename)
 
         # Validate the sequences are actually nucleotides
-        if lmdb_handle.type != "nucleotide":
-            lmdb_handle.close()
-            lmdb_handle.cleanup()
+        if lmdb_faq_handle.type != "nucleotide":
+            lmdb_faq_handle.close()
+            lmdb_faq_handle.cleanup()
             raise ValueError(
                 f"Given input fasta/fastq file sequences do not match the given sequence type: '{seq_type}'"
             )
 
         # Six frame translation and writing to an uncompressed fasta file
-        num_seqs = lmdb_handle.__len__()
+        num_seqs = len(lmdb_faq_handle)
         for i in range(0, num_seqs):
-            name, seq, _ = lmdb_handle[i]
+            name, seq, _ = lmdb_faq_handle[i]
             translated = six_frame_translation(
                 seq,
                 name,
@@ -209,8 +216,8 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
                 no_orfs_seq_names.append(name)
 
         # Cleanup fasta/fastq index and create an index for the ORF translated seq file
-        lmdb_handle.close()
-        lmdb_handle.cleanup()
+        lmdb_faq_handle.close()
+        lmdb_faq_handle.cleanup()
 
         # If none of the sequence in the input file has a K-mer
         if len(no_orfs_seq_names) == num_seqs:
@@ -220,20 +227,20 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
             sys.exit()
 
         query = os.path.abspath(orfs_filename)
-        lmdb_folder = f"{config['output_directory']}/{os.path.splitext(os.path.basename(query))[0]}.lmdb"
+        lmdb_faq_folder = f"{config['output_directory']}/{os.path.splitext(os.path.basename(query))[0]}_faqi.lmdb"
 
         # Remove the index if it already exists
-        cleanup_dir(lmdb_folder)
+        cleanup_dir(lmdb_faq_folder)
 
         # Create the index
-        lmdb_handle = LMDBStore(lmdb_folder, config["k"])
-        lmdb_handle.build_index(query)
-        lmdb_handle.flush()
-        lmdb_handle.close()
+        lmdb_faq_handle = LMDBFAQStore(lmdb_faq_folder, config["k"])
+        lmdb_faq_handle.build_index(query)
+        lmdb_faq_handle.flush()
+        lmdb_faq_handle.close()
 
         # Re-open LMDB index in readonly mode
-        lmdb_handle = LMDBStore(
-            lmdb_folder,
+        lmdb_faq_handle = LMDBFAQStore(
+            lmdb_faq_folder,
             config["k"],
             readonly=True,
             lock=False,
@@ -243,42 +250,121 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
     # Validate the sequences
     if (
         seq_type == "nucleotide"
-        and lmdb_handle.type != "nucleotide"
+        and lmdb_faq_handle.type != "nucleotide"
         or seq_type == "aminoacid"
-        and lmdb_handle.type == "nucleotide"
+        and lmdb_faq_handle.type == "nucleotide"
     ):
-        lmdb_handle.close()
-        lmdb_handle.cleanup()
+        lmdb_faq_handle.close()
+        lmdb_faq_handle.cleanup()
         raise ValueError(
             f"Given input fasta/fastq file sequences does not match the given sequence type: '{seq_type}'"
         )
 
-    num_sequences = lmdb_handle.__len__()
+    num_sequences = len(lmdb_faq_handle)
 
     if num_sequences == 0:
-        lmdb_handle.close()
-        lmdb_handle.cleanup()
+        lmdb_faq_handle.close()
+        lmdb_faq_handle.cleanup()
         raise ValueError("Input query file is empty")
 
-    # Setup lock and queue for collecting results of every sequence
-    lock = Manager().Lock()
-    out_queue = Manager().Queue()
+    # Step 1: Hash the sequences (in parallel)
+    # Setup queue for collecting hashes of every k-mer in every sequence
+    hash_queue = Manager().Queue()
+    hash_collection = {}
     procs = []
 
-    # Calculate hash for every kmer in every sequence
+    # Calculate and return hash for every kmer in every sequence
     for seq_indices in splitjobs(range(num_sequences), config["nproc"]):
         proc = Process(
-            target=file_query,
+            target=calculate_hash,
             args=(
-                lmdb_handle,
+                lmdb_faq_handle,
                 seq_indices,
                 config,
                 seq_type,
-                threshold,
+                hash_queue,
+            ),
+        )
+        procs.append(proc)
+        proc.start()
+
+    for proc in procs:
+        proc.join()
+
+    # Collect hashes from the queue
+    while not hash_queue.empty():
+        hash_collection.update(hash_queue.get())
+
+    # Extract the hash values from the hash_collection as a single list
+    index_collection = [
+        item
+        for hash_list in hash_collection.values()
+        for sub_list in hash_list
+        for item in sub_list
+    ]
+
+    # Step 2: Binning the hashes
+    # Bin the hash values based on the index store chunk size so that we access
+    # each chunk in the index store only once to retrieve the bit-slices (saves time)
+    binned = binning(np.unique(index_collection), config["nrows"], config["chunk_size"])
+
+    # Step 3: Query the index store and retrieve the bit-slices
+    # Retrieve the bit-slices from the index store and store them in a key-value (KV) store
+    # with the hash value as the key and the bit-slice as the value
+    # This is done in parallel
+    # Setup KV store for storing the bit-slices
+    kvstore_dir = f"{config['output_directory']}/metaprofi_bitslices_kvstore_temp.lmdb"
+
+    # Remove the KV store if it already exists
+    cleanup_dir(kvstore_dir)
+
+    kv_store = LMDBKVStore(kvstore_dir)
+
+    # Bit-slice retrieval in parallel
+    procs = []
+
+    for sub_dict in splitjobs(binned, config["nproc"]):
+        proc = Process(
+            target=retrieve_bit_slices,
+            args=(
                 index_dataset,
+                sub_dict,
+                kv_store,
+            ),
+        )
+        procs.append(proc)
+        proc.start()
+
+    for proc in procs:
+        proc.join()
+
+    # Flush and close the KV store
+    kv_store.flush()
+    kv_store.close()
+
+    # Re-open the KV store in readonly mode for parallel access without locking
+    kv_store = LMDBKVStore(
+        kvstore_dir,
+        readonly=True,
+        lock=False,
+        max_readers=config["nproc"],
+    )
+
+    # Step 4: Perform approximate/exact search based on the set threshold
+    # Perform approximate/exact search based on the set threshold in parallel
+    # and store the results in a queue
+    search_queue = Manager().Queue()
+    procs = []
+
+    for hash_arrays in splitjobs(hash_collection, config["nproc"]):
+        proc = Process(
+            target=search,
+            args=(
+                kv_store,
+                hash_arrays,
                 index_metadata_dataset,
-                lock,
-                out_queue,
+                threshold,
+                search_queue,
             ),
         )
         procs.append(proc)
@@ -288,18 +374,21 @@ def search_index(config, query, inp_seq, seq_type, threshold=100, write_to_file=
         proc.join()
 
     # Dequeue the results and make a dictionary
-    while not out_queue.empty():
-        for seq_id, sample_ids in out_queue.get():
+    while not search_queue.empty():
+        for seq_id, sample_ids in search_queue.get():
             all_results[seq_id] = sample_ids
 
     # Process results
     query_results = process_results(all_results)
 
     # Cleanup
+    lmdb_faq_handle.close()
+    lmdb_faq_handle.cleanup()
+    kv_store.close()
+    kv_store.cleanup()
+
     if orfs_filename:
         cleanup_file(orfs_filename)
-    lmdb_handle.close()
-    lmdb_handle.cleanup()
 
     # Write results to a file
     if write_to_file:
@@ -342,28 +431,54 @@ def sequence_query(kmer_hash_array, index_dataset, index_metadata_dataset, thres
     return results
 
 
-def file_query(
-    lmdb_handle,
-    seq_indices,
-    config,
-    seq_type,
-    threshold,
-    index_dataset,
-    index_metadata_dataset,
-    lock=None,
-    queue=None,
-):
-    """Get sample identifiers for given FASTA/FASTQ file
+def calculate_hash(lmdb_faq_handle, seq_indices, config, seq_type, hash_queue):
+    """Calculate the hash for every kmer in every sequence and store the hash value in a queue
 
     Args:
-      lmdb_handle: LMDB index DB handle
+      lmdb_faq_handle: LMDB index DB handle
       seq_indices: Subsequence index list
       config: Config dictionary
       seq_type: Type of the sequence in the input file
-      threshold: Threshold to perfrom exact or approxiamte search
+      hash_queue: Queue object to store the hashes of every sequence (in list of lists)
+
+    """
+    hash_dict = {}
+
+    # Read seqeunces using the lmdb handle and then convert each sequence(s)-> kmers -> hash array(s)
+    for seq_index in seq_indices:
+        name, seq, _ = lmdb_faq_handle[seq_index]
+        hash_array = sequence_to_hash_cython(seq, seq_type, config)
+        hash_dict[name] = hash_array
+
+    # Write the hash arrays to the queue
+    hash_queue.put(hash_dict)
+
+
+def retrieve_bit_slices(index_dataset, binned, kvstore_handle):
+    """Retrieve the bit-slices from the index store and store them in a LMDB key-value database
+
+    Args:
       index_dataset: Index dataset object handle from Zarr store
-      index_metadata_dataset: Index store metadata dataset handle
-      lock: Lock object to lock the Queue
+      binned: Binned hash values
+      kvstore_handle: LMDB key-value store handle to store the bit-slices
+
+    """
+
+    # Retrieve the bit-slices from the index store and store them in the key-value store
+    _ = [
+        kvstore_handle.set_multi(index_keys, index_dataset[index_keys])
+        for chunk_number, index_keys in binned.items()
+    ]
+
+
+def search(kvstore_handle, hash_arrays, index_metadata_dataset, threshold, queue):
+    """Get sample identifiers for given FASTA/FASTQ file
+
+    Args:
+      kvstore_handle: LMDB key-value store handle
+      hash_arrays: List of hash arrays
+      index_metadata_dataset: Index metadata dataset object handle from Zarr store
+      threshold: Threshold to perfrom exact or approxiamte search
       queue: Queue object to store the results
 
     Note:
@@ -371,29 +486,15 @@ def file_query(
 
     """
     results = []
-    hash_arrays = []
-
-    # Convert sequence(s) to kmers to hash array(s)
-    for seq_index in seq_indices:
-        name, seq, _ = lmdb_handle[seq_index]
-        hash_array = sequence_to_hash_cython(seq, seq_type, config)
-        hash_arrays.append([name, hash_array])
-
-    # Deduplicate hashes and retrieve the corresponding bit-slices from the index store
-    index_keys = list(
-        set(itertools.chain(*itertools.chain(*map(itemgetter(1), hash_arrays))))
-    )
-    index_keys.sort()
-    index_dict = dict(zip(index_keys, index_dataset.vindex[index_keys]))
 
     # For every sequence (hash array of the sequence) apply exact or approximate query search
-    for seq_id, hash_array in hash_arrays:
+    for seq_id, hash_array in hash_arrays.items():
         kmer_rows = {}
         num_kmers = len(hash_array)
 
         for key, val in enumerate(hash_array):
             kmer_rows[key] = bitwise_and(
-                [zstd_decompress(index_dict[row]) for row in val]
+                [zstd_decompress(kvstore_handle[row]) for row in val]
             )
 
         # Based on the threshold apply approximate or exact search
@@ -411,9 +512,7 @@ def file_query(
         del kmer_rows
 
     # Write the sample identifiers found to the queue
-    with lock:
-        queue.put(results)
-    return
+    queue.put(results)
 
 
 def approx_search(num_kmers, kmer_rows, threshold, index_metadata_dataset):
@@ -476,6 +575,23 @@ def exact_search(kmer_rows, index_metadata_dataset):
     return sample_identifiers
 
 
+def binning(data, bloomfilter_size, chunk_size):
+    """Binning of the data
+
+    Args:
+      data: Data to be binned (sorted and unique list)
+      bloomfilter_size: Size of the bloomfilter
+      chunk_size: Size of the chunk in the index store
+
+    Returns: Dictionary of binned data
+    """
+    bins = list(range(0, bloomfilter_size + chunk_size, chunk_size))
+    binned = defaultdict(list)
+    digitized = np.digitize(data, bins)
+    _ = [binned[bins[j]].append(int(data[i])) for i, j in enumerate(digitized)]
+    return binned
+
+
 def process_results(query_results):
     """Removes empty results
 
@@ -525,7 +641,7 @@ def write_query_results(results, threshold, output_dir):
             else:
                 if any(isinstance(i, dict) for i in results.values()):
                     for seq_id, val in results.items():
-                        output_writer.write(f"Query sequence id/name: {seq_id}\n")
+                        output_writer.write(f"Query sequence id: {seq_id}\n")
                         output_writer.write("\tSample identifier(s):\n")
                         for names, num_kmers in val.items():
                             output_writer.write(

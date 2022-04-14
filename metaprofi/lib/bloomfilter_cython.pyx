@@ -1,4 +1,4 @@
-#cython: language_level=3, boundscheck=False, wraparound=False
+#cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, infer_types=True
 """NumPy boolean bloom filter in cython
 """
 
@@ -15,7 +15,7 @@ cdef extern from "Python.h":
 
 def check_kmer_exists(list input_files, uint32_t kmer_size):
     """Check if a k-mer exists in any of the given input files
-    
+
     Used for filtering out the input sample files
 
     Args:
@@ -26,7 +26,6 @@ def check_kmer_exists(list input_files, uint32_t kmer_size):
 
     """
     # Declaration and initialization
-    cdef tuple read_obj
     cdef str input_file
     cdef Py_ssize_t seq_len
     cdef const char *seq_cstr
@@ -46,7 +45,7 @@ def check_kmer_exists(list input_files, uint32_t kmer_size):
 
 
 cdef uint8_t setbit(uint8_t np_num, int bit_idx):
-    """Flips a specific bit on a given NumPy uint8 integer 
+    """Flips a specific bit on a given NumPy uint8 integer
 
     Args:
       np_num: NumPy uint8 integer
@@ -61,7 +60,7 @@ cdef uint8_t setbit(uint8_t np_num, int bit_idx):
 
 
 @cython.cdivision(True)
-def bloomfilter_cython(list input_files, dict config, cnp.npy_uint8[:, :] shared_array, Py_ssize_t column_idx):
+def bloomfilter_cython(list input_files, dict config, cnp.npy_uint8[:, ::1] shared_array, Py_ssize_t column_idx):
     """Computes hash for every k-mer in ever sequence in the input file(s) and creates the indexed bloom filter
 
     Args:
@@ -78,7 +77,6 @@ def bloomfilter_cython(list input_files, dict config, cnp.npy_uint8[:, :] shared
     cdef uint64_t num_hash = config["h"]
     cdef Py_ssize_t bf_size = config["m"]
     cdef str sequence_type = config["sequence_type"]
-    cdef tuple read_obj
     cdef Py_ssize_t i, row_idx, seq_len
     cdef int h, s
     cdef str input_file
@@ -129,7 +127,7 @@ def bloomfilter_cython(list input_files, dict config, cnp.npy_uint8[:, :] shared
                             row_idx = hash_value // 8
                             value = setbit(shared_array[row_idx, column_idx], bit_idx)
                             shared_array[row_idx, column_idx] = value
-    
+
     # Deallocate memory
     free(reverse_kmer)
     free(hashes)
@@ -137,7 +135,7 @@ def bloomfilter_cython(list input_files, dict config, cnp.npy_uint8[:, :] shared
 
 
 @cython.cdivision(True)
-def seq_bloomfilter_cython(str seq, dict config, cnp.npy_uint8[:, :] shared_array, int column_idx):
+def seq_bloomfilter_cython(str seq, dict config, cnp.npy_uint8[:, ::1] shared_array, int column_idx):
     """Computes hash for every k-mer in ever sequence in the input file(s) and creates the indexed bloom filter
 
     Args:
@@ -195,7 +193,7 @@ def seq_bloomfilter_cython(str seq, dict config, cnp.npy_uint8[:, :] shared_arra
                 row_idx = hash_value // 8
                 value = setbit(shared_array[row_idx, column_idx], bit_idx)
                 shared_array[row_idx, column_idx] = value
-    
+
     # Deallocate memory
     free(reverse_kmer)
     free(hashes)
@@ -209,6 +207,7 @@ def sequence_to_hash_cython(str seq, str seq_type, dict config):
     Args:
       sequence: Amino acid or nucleotide sequence
       seq_type: aminoacid or nucleotide
+      config: Config dictionary
 
     Returns: List of hash values
 
@@ -223,7 +222,7 @@ def sequence_to_hash_cython(str seq, str seq_type, dict config):
     cdef char *seq_pointer
     cdef char *kmer
     cdef char *canonical
-    cdef uint64_t hash_value    
+    cdef uint64_t hash_value
     cdef list kmer_array = []
     cdef list hash_array = []
     cdef char *reverse_kmer = <char *>malloc(kmer_size)
@@ -276,10 +275,13 @@ cdef char *canonical_kmer(char *kmer, int kmer_size, char *rev_comp):
       kmer: K-mer
       kmer_size: Size of the k-mer
       rev_comp: memory to hold the reverse complement of k-mer
+
     Returns: Canonical k-mer
-    NOTE: 
+
+    NOTE:
       1) Creates reverse complement to the given k-mer
       2) Returns the canonical k-mer
+
     """
     cdef char* basemap = [b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',  b'T', b'\0', b'G', b'\0', b'\0', b'\0', b'C', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'N', b'\0', b'\0', b'\0', b'\0', b'\0', b'A', b'A', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b't', b'\0', b'g', b'\0', b'\0', b'\0', b'c', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'a',  b'a']
     cdef bint use_rev_comp = False
@@ -424,7 +426,7 @@ cdef uint64_t mmh3_hash_64(const char *data, const uint64_t kmer_size, const uin
             out_hashes[s] ^= k1
             out_hashes[s] = out_hashes[s] << 27 | out_hashes[s] >> 37 # inlined ROTL64
             out_hashes[s] = out_hashes[s] * 5 + x2
-    
+
     # tail
     tail_index = nblocks * 8
     k1 = 0

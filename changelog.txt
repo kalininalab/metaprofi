@@ -1,0 +1,16 @@
+0.6.0 (19-03-2022)
+Added
+    - Additions
+        - utilities.py:
+            1. Utilities for memory mapped reading of the chunks
+            2. Parser for reading MetaProFi query results (API)
+        - LMDB backed key value store for storing the bit-slices that were retrieved from the index during the search phase, so they can be shared between multiple processes
+Changed
+    - Updated requirements in setup.py and the pyproject.toml files
+    - Removed support for Python 3.7.7 and now minimum version requirement is Python 3.8
+    - Using MemoryMappedDirectoryStore class for reading chunks wherever possible
+    - Renamed lmdb_index.py to lmdb_faq_index.py
+    - Changed search index module (search_index.py) logic, such that the index chunks will be accessed only once resulting in less number of I/O operations. This improves the performance of the search index a lot.
+    - Adjusted the index chunk size calculation in utilities.py and added notes in the code (Improves performance of index construction)
+    - Parallelized the input file parsing in the zarrstore.py file
+    - Updated benchmarks folder with new results and added new benchmarks

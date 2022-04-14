@@ -7,3 +7,7 @@ tasks.txt
 .eggs/
 *.egg-info/
 metaprofi_conda_env.yml
+build/
+*egg-info/
+*.c
+*.h

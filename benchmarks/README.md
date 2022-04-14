@@ -27,7 +27,7 @@ MetaProFi was installed as a conda environment
   git clone https://github.com/kalininalab/metaprofi.git
 
   # Step 3: Create a new environment and install MetaProFi
-  conda create --name metaprofi python==3.7.7 pigz
+  conda create --name metaprofi python==3.8 pigz
   conda activate metaprofi
   pip install /path/to/metaprofi/git/repo/directory/
   ```
@@ -39,4 +39,5 @@ Each sub-folder in this directory further contains specific details on how the d
 - [UniProtKB-organism level index](https://github.com/kalininalab/metaprofi/tree/master/benchmarks/uniprotkb_organism_level_index)
 - [UniProtKB-sequence level index](https://github.com/kalininalab/metaprofi/tree/master/benchmarks/uniprotkb_sequence_level_index)
 - [Tara Oceans index](https://github.com/kalininalab/metaprofi/tree/master/benchmarks/tara_oceans_index)
+- [RNA-seq-mini index](https://github.com/kalininalab/metaprofi/tree/master/benchmarks/rna_seq_mini_index)
 - [RNA-seq index](https://github.com/kalininalab/metaprofi/tree/master/benchmarks/rna_seq_index)

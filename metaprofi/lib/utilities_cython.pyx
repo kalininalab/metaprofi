@@ -1,6 +1,7 @@
-#cython: language_level=3
+#cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, infer_types=True
 """MetaProFi cython utilities module
 """
+
 from libc.stdlib cimport free, malloc
 
 cdef extern from "Python.h":
@@ -25,7 +26,7 @@ def reverse_complement(str seq):
 
     for i in range(seq_len):
         rev_comp[seq_len - i - 1] = basemap[<int>seq_pointer[i]]
-    
+
     result = rev_comp[:seq_len].decode('UTF-8')
     free(rev_comp)
     return result

@@ -2,7 +2,6 @@
 """
 
 import os
-import sys
 import warnings
 from datetime import datetime
 from multiprocessing import Process
@@ -12,11 +11,11 @@ import zarr
 from metaprofi.lib.constants import (
     BLOOMFILTER_DATASET_NAME,
     BLOOMFILTER_INDEX_DATASET_NAME,
-    COMPRESSION_ALGO,
     COMPRESSION_LEVEL,
     METADATA_DATASET_NAME,
 )
 from metaprofi.lib.utilities import (
+    MemoryMappedDirectoryStore,
     check_dir,
     check_zarr_index_store,
     check_zarr_store,
@@ -61,7 +60,8 @@ def build_index(config):
     compressor = Zstd(level=COMPRESSION_LEVEL)
 
     # Matrix store
-    matrix_store = zarr.open(matrix_store_dir, mode="r")
+    mmaped_store = MemoryMappedDirectoryStore(matrix_store_dir)
+    matrix_store = zarr.open(mmaped_store, mode="r")
 
     # Dataset
     bf_dataset = matrix_store.get(BLOOMFILTER_DATASET_NAME)

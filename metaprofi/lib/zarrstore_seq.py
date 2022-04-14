@@ -4,21 +4,17 @@
 import os
 import sys
 from datetime import datetime
-import numpy as np
-import zarr
-import SharedArray as sarray
 from multiprocessing import Process
-from tqdm import tqdm
-from numcodecs import blosc, Zstd
-from metaprofi.lib.bloomfilter_cython import (
-    seq_bloomfilter_cython,
-)
+import numpy as np
+import SharedArray as sarray
+import zarr
+from metaprofi.lib.bloomfilter_cython import seq_bloomfilter_cython
 from metaprofi.lib.constants import (
     BLOOMFILTER_DATASET_NAME,
-    COMPRESSION_ALGO,
     COMPRESSION_LEVEL,
     METADATA_DATASET_NAME,
 )
+from metaprofi.lib.lmdb_faq_index import LMDBFAQStore
 from metaprofi.lib.utilities import (
     calculate_chunksize,
     calculate_index_chunksize,
@@ -28,7 +24,8 @@ from metaprofi.lib.utilities import (
     cleanup_dir,
     splitjobs,
 )
-from metaprofi.lib.lmdb_index import LMDBStore
+from numcodecs import Zstd, blosc
+from tqdm import tqdm
 
 # Global
 POSIX_SHARED_MEMORY_ARRAY = ""
@@ -71,19 +68,19 @@ class ZarrStoreSeq:
                 )
 
         # Remove any previously built input file index if present
-        lmdb_folder = f"{self.config['output_directory']}/{os.path.splitext(os.path.basename(self.input_file))[0]}.lmdb"
-        cleanup_dir(lmdb_folder)
+        lmdb_faq_folder = f"{self.config['output_directory']}/{os.path.splitext(os.path.basename(self.input_file))[0]}.lmdb"
+        cleanup_dir(lmdb_faq_folder)
 
         # Building the input file index
         print("INFO: Building index for the input file ...")
-        self.lmdb_handle = LMDBStore(lmdb_folder, self.config["k"])
-        self.lmdb_handle.build_index(self.input_file)
-        self.lmdb_handle.flush()
-        self.lmdb_handle.close()
+        self.lmdb_faq_handle = LMDBFAQStore(lmdb_faq_folder, self.config["k"])
+        self.lmdb_faq_handle.build_index(self.input_file)
+        self.lmdb_faq_handle.flush()
+        self.lmdb_faq_handle.close()
 
         # Re-open LMDB index in readonly mode
-        self.lmdb_handle = LMDBStore(
-            lmdb_folder,
+        self.lmdb_faq_handle = LMDBFAQStore(
+            lmdb_faq_folder,
             self.config["k"],
             readonly=True,
             lock=False,
@@ -91,7 +88,7 @@ class ZarrStoreSeq:
         )
 
         # Get the total number of sequences that has at least 1 k-mer
-        self.number_of_seqs = self.lmdb_handle.__len__()
+        self.number_of_seqs = len(self.lmdb_faq_handle)
 
         # Calculate chunksize
         (
@@ -171,15 +168,15 @@ class ZarrStoreSeq:
         metadata.attrs["index_chunk_rows"] = index_chunk_rows
 
         # Insert sample identifiers into the zarr store
-        write_sample_identifiers_to_zarr(self.lmdb_handle, metadata)
+        write_sample_identifiers_to_zarr(self.lmdb_faq_handle, metadata)
 
         # Insert the bloomfilter data into the zarr store
         self.insert_bf_into_zarr(bf_dataset)
 
         # Clean up
         cleanup_dir(sync_dir)
-        self.lmdb_handle.close()
-        self.lmdb_handle.cleanup()
+        self.lmdb_faq_handle.close()
+        self.lmdb_faq_handle.cleanup()
 
         # Log output
         print("Bloom filter matrix store is now created with all the samples")
@@ -246,7 +243,7 @@ class ZarrStoreSeq:
                     args=(
                         samp_list,
                         self.config,
-                        self.lmdb_handle,
+                        self.lmdb_faq_handle,
                     ),
                 )
                 proc.start()
@@ -286,12 +283,13 @@ class ZarrStoreSeq:
         pbar.close()
 
 
-def mp_bloomfilter(samples_list, config, lmdb_handle):
+def mp_bloomfilter(samples_list, config, lmdb_faq_handle):
     """Helper function for creating bloom filters in parallel
 
     Args:
       samples_list: Samples list
       config: Config dictionary
+      lmdb_faq_handle: LMDB handle for the faq database
 
     """
     # Attach to the POSIX shared memory NumPy boolean array
@@ -299,30 +297,30 @@ def mp_bloomfilter(samples_list, config, lmdb_handle):
 
     # Bloom filters
     for sample_info in samples_list:
-        _, seq, _ = lmdb_handle[sample_info[0]]
+        _, seq, _ = lmdb_faq_handle[sample_info[0]]
         seq_bloomfilter_cython(seq, config, shared_array, sample_info[1])
         del seq
 
 
-def write_sample_identifiers_to_zarr(lmdb_handle, metadata_dataset):
+def write_sample_identifiers_to_zarr(lmdb_faq_handle, metadata_dataset):
     """Function for inserting sample identifiers into the zarr store
 
     Args:
-      lmdb_handle: LMDB index db handle
+      lmdb_faq_handle: LMDB handle for the faq database
       metadata_dataset: BF matrix store's metadata dataset handle
 
     """
     keys = []
     bpoint = 0
 
-    num_keys = lmdb_handle.__len__()
+    num_keys = len(lmdb_faq_handle)
     if num_keys > 5_000_000:
         bpoint = 5_000_000
     else:
         bpoint = num_keys
 
     start_idx = 0
-    for idx, key in enumerate(lmdb_handle.get_seq_names(), start=1):
+    for idx, key in enumerate(lmdb_faq_handle.get_seq_names(), start=1):
         keys.append(key)
         if len(keys) == bpoint:
             metadata_dataset[start_idx:idx] = np.array(keys, dtype="object")

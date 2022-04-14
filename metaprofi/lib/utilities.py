@@ -2,6 +2,7 @@
 """
 
 import gzip
+from itertools import islice
 import math
 import os
 import shutil
@@ -13,6 +14,9 @@ import zarr
 import zstd
 from bitarray import bitarray
 from humanfriendly import format_size, parse_size
+from numcodecs import PackBits
+from psutil import cpu_count, virtual_memory
+from pyfastx import Fasta, Fastq
 from metaprofi.lib.constants import (
     BLOOMFILTER_DATASET_NAME,
     BLOOMFILTER_INDEX_DATASET_NAME,
@@ -20,9 +24,6 @@ from metaprofi.lib.constants import (
     MATRIX_STORE,
     METADATA_DATASET_NAME,
 )
-from numcodecs import PackBits
-from psutil import cpu_count, virtual_memory
-from pyfastx import Fasta, Fastq
 
 
 # ---------- Config related ---------- #
@@ -187,22 +188,25 @@ def calculate_index_chunksize(config):
     Returns: Index chunk size for Zarr store
 
     """
-    # TODO: Need a better way to calculate the row chunk size for index
+    # Note: Need a better way to calculate the row chunk size for index
     # store. Number of chunks is equal to the number of files, so here we
-    # try to limit it to max 500_000. We do not want to produce more than
-    # 500_000 files due to various disk limitations (inodes).
-    # This chunk size also affects the query performance during the retrieval
-    # of the rows from the index store.
-    if config["m"] <= 10_000_000:
-        index_chunk_rows = math.ceil(config["m"] / 5_000)
+    # try to limit it to max 10_000. We do not want to produce more than
+    # 10_000 files due to various disk limitations (inodes).
+    # This chunk size affects the size of the index on disk and also the speed of
+    # indexing. Search logic is updated in the 0.6.0 release of MetaProfi, where
+    # the hash values are binned based on this chunk size. So during search phase
+    # any chunk will be accessed only once and this improves the query performance.
+    # Also, smaller chunk size means large number of files and thus large number
+    # of I/O operations required to access the index. So this needs to be tuned properly.
+
+    if config["m"] <= 1_000_000:
+        index_chunk_rows = math.ceil(config["m"] / 500)
+    if 1_000_000 <= config["m"] < 10_000_000:
+        index_chunk_rows = math.ceil(config["m"] / 1000)
     if 10_000_000 <= config["m"] < 100_000_000:
-        index_chunk_rows = math.ceil(config["m"] / 10_000)
-    if 100_000_000 <= config["m"] < 1_000_000_000:
-        index_chunk_rows = math.ceil(config["m"] / 100_000)
-    if 1_000_000_000 <= config["m"] < 10_000_000_000:
-        index_chunk_rows = math.ceil(config["m"] / 400_000)
-    if config["m"] >= 10_000_000_000:
-        index_chunk_rows = math.ceil(config["m"] / 500_000)
+        index_chunk_rows = math.ceil(config["m"] / 5000)
+    if config["m"] >= 100_000_000:
+        index_chunk_rows = math.ceil(config["m"] / 10000)
 
     return index_chunk_rows
 
@@ -222,7 +226,7 @@ def check_config(config):
     session_id = uuid.uuid4().hex
 
     # When the user did not set max_memory to use in the config file, we try to use 50% of the available system memory as default
-    max_memory = round(((system_memory * (9.31 * 10 ** -10)) * (50 / 100)), 1)
+    max_memory = round(((system_memory * (9.31 * 10**-10)) * (50 / 100)), 1)
 
     # Mandatory config to be present in the config file
     # 1) Number of hash functions to apply on each k-mer
@@ -534,38 +538,47 @@ def is_gzip_file(input_file):
         return bool(in_f.read(2) == gzip_magic_number)
 
 
-def splitjobs(items_list, num_chunks):
-    """Given a list of items and number of chunks, will return the list in N chunks
+def splitjobs(items, num_chunks):
+    """Given a list/dict of items and number of chunks, will return the list/dict in N chunks
 
     Args:
-      items_list: List object
+      items: List or Dict object
       num_chunks: Number of chunks to split the items list into
 
-    Returns: N small chunks of the input items list
+    Returns: Generator object of the list/dict in N chunks
 
     """
-    # If len(items_list) is < num_chunks, np.array_split will provide some empty lists and we don't want that
-    num_items = len(items_list)
+    num_items = len(items)
     if num_items < num_chunks:
         num_chunks = num_items
-    return [
-        items_list[i * num_items // num_chunks : (i + 1) * num_items // num_chunks]
-        for i in range(num_chunks)
-    ]
+
+    if isinstance(items, (list, range)):
+        for i in range(num_chunks):
+            yield items[i * num_items // num_chunks : (i + 1) * num_items // num_chunks]
+    elif isinstance(items, dict):
+        for i in range(num_chunks):
+            start = i * num_items // num_chunks
+            stop = (i + 1) * num_items // num_chunks
+            yield {k: items[k] for k in islice(iter(items), start, stop)}
 
 
-def chunks(samples_list, chunk_size):
-    """Given a sample list and chunk size, returns a chunk from the list
+def chunks(items, chunk_size):
+    """Given a list/dict of items and chunk size, returns a chunk from the list/dict
 
     Args:
-      samples_list: List object
+      items: List or Dict object
       chunk_size: Number of items to have in each chunk
 
-    Returns: Generator object of chunks of the input list
+    Returns: Generator object of the list/dict where each chunk is of size chunk_size
 
     """
-    for i in range(0, len(samples_list), chunk_size):
-        yield samples_list[i : i + chunk_size]
+    if isinstance(items, (list, range)):
+        for i in range(0, len(items), chunk_size):
+            yield items[i : i + chunk_size]
+    elif isinstance(items, dict):
+        items_iter = iter(items)
+        for i in range(0, len(items), chunk_size):
+            yield {k: items[k] for k in islice(items_iter, chunk_size)}
 
 
 def bitwise_and(bloomfilters):
@@ -639,6 +652,87 @@ def reverse_complement(seq):
     return seq.translate(table)[::-1]
 
 
+def parse_metaprofi_output(metaprofi_output, print_stats=False):
+    """Reads MetaProfi output file and returns the results as a dictionary
+    and prints some basic stats
+
+    Note:
+      1. If the input file is of exact search results format, the output will be a dictionary
+      where keys are the query sequences and values are the list of sample ids
+      that matched the query sequence.
+      2. If the input file is of approximate search results format, the output will be a dictionary
+      where keys are the query sequences and values are the list of [sample id, kmer percentage]
+      that matched the query sequence.
+
+    Args:
+      metaprofi_output: MetaProfi output file
+      print_stats: Prints basic stats (Number of queries, Number of samples, Number of unique samples) [False]
+
+    Returns: Dictionary of the MetaProfi output file (key: query id, value: list of sample ids)
+
+    """
+    # Check if the input file exists
+    if not os.path.exists(metaprofi_output):
+        raise FileNotFoundError(f"{metaprofi_output} does not exist")
+
+    # Results container
+    results = {}
+
+    # approx or exact search file
+    is_exact_search = True
+
+    # Read the file and store the results in a dictionary
+    with open(metaprofi_output, "r") as inf:
+        for line in inf:
+            if line.startswith("Query sequence id:"):
+                query_id = line.split(":")[1].strip()
+                results[query_id] = []
+                continue
+            if line.startswith("\tSample identifier"):
+                continue
+            if line.startswith("\t\t"):
+                sample_info = line.strip().split(",")
+                if len(sample_info) == 2:
+                    is_exact_search = False
+                    kmer_percentage = sample_info[1].strip()
+                    kmer_percentage = kmer_percentage[
+                        kmer_percentage.find("(") + 1 : kmer_percentage.find(")")
+                    ]
+                    results[query_id].append([sample_info[0], kmer_percentage])
+                else:
+                    results[query_id].append(line.strip().split(",")[0])
+
+    if print_stats:
+        # Calculate some basic stats
+        num_queries = len(results)
+        num_samples = sum([len(sub_list) for sub_list in results.values()])
+
+        if is_exact_search:
+            num_unique_samples = len(
+                {sample_id for sub_list in results.values() for sample_id in sub_list}
+            )
+        else:
+            num_unique_samples = len(
+                {
+                    sample_id
+                    for sub_list in results.values()
+                    for sample_id, _ in sub_list
+                }
+            )
+
+        # Print the stats
+        print("Total number of query sequences:", num_queries)
+        print(
+            f"Total number of samples matched to the {num_queries} query sequences:",
+            num_samples,
+        )
+        print(
+            f"Total number of unique samples matched to the {num_queries} query sequences:",
+            num_unique_samples,
+        )
+    return results
+
+
 # ---------- Cleanup related ---------- #
 def cleanup_dir(directory):
     """Removes the given directory
@@ -691,3 +785,15 @@ class BColors:
     ENDC = "\033[0m"
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
+
+
+class MemoryMappedDirectoryStore(zarr.DirectoryStore):
+    """Memory mapped directory store for reading data
+
+    Overrides the zarr.DirectoryStore class to provide a memory mapped
+    directory store for reading data
+
+    """
+
+    def _fromfile(self, fn):
+        return memoryview(np.memmap(fn, mode="r"))

@@ -1,6 +1,6 @@
 # Human RNA-seq dataset index construction
 
-This directory contains all the information on how we constructed MetaProFi index for RNA-seq dataset.
+This directory contains all the information on how we constructed MetaProFi and COBS index for RNA-seq dataset.
 
 ### Data download
 
@@ -15,47 +15,50 @@ conda install parallel-fastq-dump
 - Run data download custom python [script](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/rna_seq_data_download.py)
 - Size of the compressed data is 2.7 TiB
 
-### MetaProFi commands
-
-- [config](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/config.yml) and [input](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/rna_seq_input.txt) files were created
-
-``` bash
-# Run MetaProFi
-metaprofi build input_data.txt config.yml
-```
-
 ### Results
 
-#### Bloom filter matrix construction
-
-| Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
-| --- | --- | --- | --- |
-| 1399.15 | 59 | 64 | 295 |
-
 #### Index construction
+| Tool | RAM (GiB) | CPU cores | Disk BF (GiB) | Disk index (GiB) | Disk total (GiB) | Time BF (min) | Time index (min) | Time total (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MetaProFi | 59 | 64 | 295 | 333 | 628 | 1108 | 127 | 1235 |
+| COBS | 69.4 | 64 | - | 935 | 996 | - | 1000 | 1000 |
 
-| Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
-| --- | --- | --- | --- |
-| 240.168 | 56 | 64 | 333 |
+_- = N/A_
 
 #### Querying
 
-- Update `nproc` to 20 in config.yml
+* Data download (https://github.com/kamimrcht/REINDEER/blob/master/reproduce_manuscript_results/queries.sh)
+
+
+    ``` bash
+    wget http://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/refMrna.fa.gz
+    ```
+
+* Randomly extract 1000 sequences
+
+    ``` bash
+    pyfastx sample /data/rna_seq/query/refMrna.fa.gz -n 1000 -o /data/rna_seq/query/query_1000.fa
+    ```
+* Query reads can be found [here](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/query_1000.fa)
+
+| Tool | RAM (GiB) | CPU cores | Time (s) (T = 100) | Time (s) (T = 75) |
+| --- | --- | --- | --- | --- |
+| MetaProFi | 3.4 | 64 | 43 | 48 |
+| COBS | 92.5 | 64 | 290 | 290 |
+
+### Commands
+
+#### MetaProFi
+- [config](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/config.yml) and [input](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/rna_seq_input.txt) files were created
 
 ``` bash
 # Activate conda environment
 conda activate metaprofi
 
-# Data download (https://github.com/kamimrcht/REINDEER/blob/master/reproduce_manuscript_results/queries.sh)
-wget http://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/refMrna.fa.gz
+# Index construction
+metaprofi build input_data.txt config.yml
 
-# Randomly extract 1000 sequences
-pyfastx sample /data/rna_seq/query/refMrna.fa.gz -n 1000 -o /data/rna_seq/query/query_1000.fa
-```
-
-- Query reads can be found [here](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/query_1000.fa)
-
-``` bash
+# Querying
 # Exact sequence search
 metaprofi search_index config.yml -f /data/rna_seq/query/query_1000.fa -i nucleotide
 
@@ -63,7 +66,33 @@ metaprofi search_index config.yml -f /data/rna_seq/query/query_1000.fa -i nucleo
 metaprofi search_index config.yml -f /data/rna_seq/query/query_1000.fa -i nucleotide -t 75
 ```
 
-| Search type | Time (seconds) | RAM (GiB) | CPU cores | Results |
-| --- | --- | --- | --- | --- |
-| Exact search (T=100%) | 349 | 1.9 | 20 | [results](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/metaprofi_query_results-05_08_2021-06_56_31_t100.txt) |
-| Approximate search (T=75%) | 359 | 1.9 | 20 | [results](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/rna_seq_index/metaprofi_query_results-05_08_2021-07_17_31_t75.txt) |
+#### COBS
+
+``` bash
+# Installation
+## Create conda environment
+conda create --name cobs -c conda-forge gxx compilers cmake libboost
+
+## Activate conda environment
+conda activate cobs
+
+## Install COBS
+git clone --recursive https://github.com/bingmann/cobs.git
+mkdir cobs/build
+cd cobs/build
+cmake ..
+make -j8
+
+# Input file creation
+ls /data/rna_seq/*.fasta.gz > ./benchmarks/cobs/cobs_rna_seq_input.list
+
+# Index construction
+./cobs/build/src/cobs compact-construct --file-type list -T 64 -k 21 -m 68720000000 ./benchmarks/cobs/cobs_rna_seq_input.list ./benchmarks/cobs/rna_seq.cobs_compact
+
+# Querying
+## Exact sequence search
+./cobs/build/src/cobs query -i ./benchmarks/cobs/rna_seq.cobs_compact -T 64 -f /data/rna_seq/query/query_1000.fa -t 1.0 > ./benchmarks/cobs/rna_seq_query_t100.txt
+
+## Approximate sequence search
+./cobs/build/src/cobs query -i ./benchmarks/cobs/rna_seq.cobs_compact -T 64 -f /data/rna_seq/query/query_1000.fa -t 0.75 > ./benchmarks/cobs/rna_seq_query_t75.txt
+```

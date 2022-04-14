@@ -28,11 +28,11 @@ metaprofi build-seq /data/uniprotkb_datasets/uniprot_bacteria.fasta.gz config.ym
 
 |Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
 | --- | --- | --- | --- |
-| 66.33 | <60 | 64 | 232 |
+| 65.38 | <60 | 64 | 232 |
 
 
 #### Index construction
 
 | Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
 | --- | --- | --- | --- |
-| 862.57 | <60 | 64 | 210 |
+| 1357 | <60 | 64 | 210 |

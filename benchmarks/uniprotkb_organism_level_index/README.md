@@ -63,4 +63,4 @@ metaprofi build input_data.txt config.yml
 
 | Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
 | --- | --- | --- | --- |
-| 1290.59 | <60 | 64 | 135 |
+| 971 | <60 | 64 | 135 |

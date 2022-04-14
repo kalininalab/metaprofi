@@ -23,17 +23,14 @@ metaprofi build input_data.txt config.yml
 
 ### Results
 
-#### Bloom filter matrix construction
-
-| Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
-| --- | --- | --- | --- |
-| 2998.34 | <58 | 64 | 640 |
-
 #### Index construction
 
-| Time (min) | RAM (GiB) | CPU cores | Disk (GiB) |
-| --- | --- | --- | --- |
-| 252.24 | 70 | 64 | 751 |
+| Tool | RAM (GiB) | CPU cores | Disk BF (GiB) | Disk index (GiB) | Disk total (GiB) | Time BF (min) | Time index (min) | Time total (min) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| MetaProFi | 68 | 64 | 643 | 750 | 1393 | 2642 | 279 | 2921 |
+| kmtricks + HowDeSBT | 47 | 64 | 1228.8 | >390* | 2344 + 390* | 865 | >7217.42* | >8082.42* |
+
+_BF: Bloom filter, Disk total is the total storage used for BF, index and intermediate files, Time total: total time used to construct BF and index, *: terminated after 120 hrs, data reported as it is at the time of termination._
 
 #### Querying
 
@@ -56,13 +53,17 @@ metaprofi build input_data.txt config.yml
 metaprofi search_index config.yml -f query_reads.fastq -i nucleotide
 
 # Approximate sequence search
-metaprofi search_index config.yml -f query_reads.fastq -i nucleotide -t 40
+metaprofi search_index config.yml -f query_reads.fastq -i nucleotide -t 75
 ```
 
-| Search type | Time (seconds) | RAM (GiB) | CPU cores | Results |
-| --- | --- | --- | --- | --- |
-| Exact search (T=100%) | 12.877 | 1.3 | 64 | [results](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/tara_oceans_index/metaprofi_query_results-16_07_2021-11_54_08_t100.txt) |
-| Approximate search (T=40%) | 13.048 | 1.3 | 64 | [results](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/tara_oceans_index/metaprofi_query_results-16_07_2021-11_54_40_t40.txt) |
+* MetaProFi query results
+
+    | Search type | Time (seconds) | RAM (GiB) | CPU cores |
+    | --- | --- | --- | --- |
+    | Exact search (T=100%) | 164 | 14.3 | 64 |
+    | Approximate search (T=75%) | 166 | 14.3 | 64 |
+
+* kmtricks + HowDeSBT query results: We were unable to compare the query results with the kmtricks + HowDeSBT setup as the index construction had to be terminated after 120 hrs.
 
 ### kmtricks
 
@@ -70,68 +71,29 @@ metaprofi search_index config.yml -f query_reads.fastq -i nucleotide -t 40
 
 ``` bash
 # 1: Create conda environment
-conda create --name kmtricks python==3.7.7 kmtricks -c tlemane
+conda create --name kmtricks kmtricks -c tlemane
 
 # 2: Activate conda environment
 conda activate kmtricks
 
 # 3: Version check
-kmtricks.py --version
+kmtricks --version
 
 # Output
-kmtricks v0.0.6, git_sha1 : 8539f16
+kmtricks v1.1.1
 ```
 
-#### Bloom filter construction as outlined [here](https://github.com/pierrepeterlongo/kmtricks_benchmarks/tree/master/tara-metag-bacterial/expe_kmtricks) and [here](https://github.com/tlemane/kmtricks)
+#### Bloom filter and index construction as outlined [here](https://github.com/pierrepeterlongo/kmtricks_benchmarks/tree/master/tara-metag-bacterial/expe_kmtricks) and [here](https://github.com/tlemane/kmtricks/wiki)
 
 - kmtricks input file can be found [here](https://github.com/kalininalab/metaprofi/blob/master/benchmarks/tara_oceans_index/kmtricks_input.txt)
-- Two sets of parameters were used
-    1.  Most of the options were left to the default values including `--max-memory`
 
-    ``` bash
-    kmtricks.py run --file kmtricks_input.txt --kmer-size 31 --run-dir /data/kmtricks/tara_oceans/ --count-abundance-min 1 --mode bf_trp --nb-cores 64 --lz4 --log-files merge --max-hash 40000000000 --hasher sabuhash --split howde
-    ```
+``` bash
+# Activate conda environment
+conda activate kmtricks
 
-    2. Using parameters reported in [kmtricks](https://github.com/pierrepeterlongo/kmtricks_benchmarks/tree/master/tara-metag-bacterial/expe_kmtricks)
+# Bloom filter construction
+kmtricks pipeline --run-dir benchmarks/kmtricks_tara_oceans --file kmtricks_input.txt --hard-min 1 --kmer-size 31 --threads 64 --mode hash:bft:bin --cpr --bloom-size 40000000000 --bf-format howdesbt
 
-    ``` bash
-    kmtricks.py run --file kmtricks_input.txt --kmer-size 31 --run-dir /data/kmtricks/tara_oceans/ --count-abundance-min 1 --max-count 256 --max-memory 8000 --mode bf_trp --nb-cores 64 --lz4 --merge-abundance-min 3 --recurrence-min 1 --save-if 1 --log-files merge --max-hash 40000000000 --hasher sabuhash --split howde
-    ```
-
-- Three run attempts were made to construct Bloom filters
-    1. Run1: Using parameter set 1 (defaults)
-        1. Got terminated after 9 hrs due to the consumption of the entire disk space of 2.9 TiB
-        2. Raised the following error
-
-        ``` bash
-        OSError: [Errno 28] No space left on device
-        ```
-
-    2. Run2: Using parameter set 1 (defaults)
-        1. Just changed the output directory to a large non-RAID NVME NFS file system
-        2. Observed a peak usage of 4.8 TiB of storage before manually terminating the run after 100 hrs
-    3. Run3: Using parameter set 2 (same as applied in [kmtricks paper](https://github.com/pierrepeterlongo/kmtricks_benchmarks/tree/master/tara-metag-bacterial/expe_kmtricks))
-        1. Got terminated after 11 hrs
-        2. Used the large non-RAID NVME NFS file system for storing the output
-        3. Raised the following error
-
-        ``` bash
-        Repartition: 1/1, Superkmer: 143/249, Count: 62749/655119, Merge: 0/2631, Output: 0/1
-
-        Signal SIGSEGV received from km_reads_to_superk with the following arguments:
-        {'id': 174, 'f': '/data/tara_oceans/ERR599054/ERR599054_1.fastq.gz,/data/tara_oceans/ERR599054/ERR599054_2.fastq.gz', 'fof': <__main__.Fof obje
-        ct at 0x7f3aaf162e90>, 'log': None, 'exp_id': 'ERR599054', 'verbose': False, 'debug': False, 'cmd': 'run', 'file': 'input.txt', 'run_dir': '/data/kmtricks/tara_oceans/', 'kmer_size': 31, 'count_abundance_min': 1, 'abundance_max': 3000000000, 'max_count': 256, 'max_memory': 8000, 'mode': 'bf_trp', 'kff_output': 0, 'log_files': 'merg
-        e', 'nb_cores': 1, 'merge_abundance_min': '3', 'recurrence_min': 1, 'save_if': 1, 'skip_merge': 0, 'until': 'all', 'only': 'all', 'minimizer_type': 0, 'minimizer_size': 10, 'repartition_typ
-        e': 0, 'nb_partitions': 2631, 'hasher': 'sabuhash', 'max_hash': 40000000000, 'split': 'howde', 'keep_tmp': 0, 'lz4': 1, 'abundance_min': 1}.
-        All children are killed. Check your inputs. If the problem persists, please contact us with a description of your run and the following files: ./km_backtrace/backtrace.log and ~/anaconda3/envs/kmtricks/bin/build/build_infos.txt.
-        ```
-
-        4. Observed a peak usage of 2.1 TiB of storage
-
-#### Results
-
-- Using the second run's partial results
-
-| Time (min) | RAM (GiB) | CPU cores | Disk (TiB) |
-| --- | --- | --- | --- |
-| - | <50 | 64| 4.8 |
+# Index construction
+kmtricks index --run-dir benchmarks/kmtricks_tara_oceans --bits 400000000 --howde -t 64
+```

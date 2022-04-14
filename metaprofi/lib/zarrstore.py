@@ -1,21 +1,20 @@
 """MetaProFi zarr store Bloom Filter (BF) matrix file-level module
 """
 
+import gzip
 import os
-from datetime import datetime
 import re
 import sys
+from datetime import datetime
+from multiprocessing import Manager, Process
 import numpy as np
-import gzip
-import zarr
 import SharedArray as sarray
-from multiprocessing import Process
+import zarr
+from numcodecs import Zstd, blosc
 from tqdm import tqdm
-from numcodecs import blosc, Zstd
 from metaprofi.lib.bloomfilter_cython import bloomfilter_cython, check_kmer_exists
 from metaprofi.lib.constants import (
     BLOOMFILTER_DATASET_NAME,
-    COMPRESSION_ALGO,
     COMPRESSION_LEVEL,
     METADATA_DATASET_NAME,
 )
@@ -24,12 +23,12 @@ from metaprofi.lib.utilities import (
     calculate_index_chunksize,
     check_dir,
     check_zarr_index_store,
-    check_zarr_store,
     chunks,
     cleanup_dir,
-    splitjobs,
     is_gzip_file,
+    splitjobs,
 )
+
 
 # Global
 POSIX_SHARED_MEMORY_ARRAY = ""
@@ -101,57 +100,94 @@ class ZarrStore:
     def parse_input_file(self):
         """Process and parse the input file containing sample ids and sample path"""
 
+        # Nested function to parse the input file in parallel
+        def parse_input_file_chunk(chunk, out_queue):
+            # fmt: off
+            sample_id_not_allowed = ['/', '\\', '*', '.', '?', ',', '[', ']', '{', '}', '!', '@', '#', '$', '%', '^', '&', '(', ')', '+', '=', '<', '>']
+            # fmt: on
+
+            non_existent_files = []
+            samples_path_list = []
+
+            for line in chunk:
+                # Remove empty lines and comments
+                if not line.strip() or line.startswith("#"):
+                    continue
+
+                # Only one sample id per line allowed
+                if line.count(":") > 1 or line.count(":") == 0:
+                    raise ValueError(
+                        "One sample identifier per line is required in the input file. Refer README for the format."
+                    )
+
+                row = re.split(": |; ", line.strip())
+                sample_id = row[0]
+                paths = row[1:]
+                if any(i in sample_id for i in sample_id_not_allowed):
+                    raise ValueError(
+                        "Sample identifiers in the input file contain special characters that are not allowed. Refer README for the format"
+                    )
+
+                # Check if file(s) exists
+                if paths:
+                    for file_path in paths:
+                        if not os.path.exists(file_path):
+                            non_existent_files.append(file_path)
+
+                # Make sure there is at least 1 sequence containing a k-mer
+                # If no k-mer found in the input file then we will just skip that input
+                # file and not create a BF for it. If k-mer exists then alculate the size of the
+                # file so we can sort the file list by size and group small BF's together
+                if paths:
+                    if check_kmer_exists(paths, self.config["k"]):
+                        size = sum([os.stat(f).st_size for f in paths])
+                        row.append(size)
+                        samples_path_list.append(row)
+
+            # Add results to the output queue
+            out_queue.put([samples_path_list, non_existent_files])
+
         print("MetaProFi: checking and reading input file ...")
+
+        # Check if input file exists and is not empty
+        if not os.path.exists(self.input_file):
+            raise FileNotFoundError(f"Input file {self.input_file} does not exist.")
 
         if os.stat(self.input_file).st_size == 0:
             raise ValueError(f"Empty input file: {self.input_file}")
 
-        # fmt: off
-        sample_id_not_allowed = ['/', '\\', '*', '.', '?', ',', '[', ']', '{', '}', '!', '@', '#', '$', '%', '^', '&', '(', ')', '+', '=', '<', '>']
-        # fmt: on
+        # Open input file
+        file_handle = (
+            gzip.open(self.input_file)
+            if is_gzip_file(self.input_file)
+            else open(self.input_file, "r")
+        )
 
-        nonexistent_files = []
+        # Read all lines to memory and close the file
+        lines = file_handle.readlines()
+        file_handle.close()
+
+        # Parallelize the parsing of the input file
+        out_queue = Manager().Queue()
+        processes = []
+
+        # Split the input file into chunks
+        for chunk in splitjobs(lines, self.config["nproc"]):
+            proc = Process(target=parse_input_file_chunk, args=(chunk, out_queue))
+            proc.start()
+            processes.append(proc)
+
+        for proc in processes:
+            proc.join()
+
+        # Get the parsed data from the queue
         samples_path_list = []
+        non_existent_files = []
 
-        compressed = is_gzip_file(self.input_file)
-
-        if compressed:
-            file_handle = gzip.open(self.input_file)
-        else:
-            file_handle = open(self.input_file, "r")
-
-        for line in file_handle:
-            if line.strip().startswith("#"):
-                continue
-
-            if line.count(":") > 1:
-                raise ValueError(
-                    "Only one sample identifier per line is allowed in the input file. Refer README for the format."
-                )
-
-            if line.count(":") < 1:
-                raise ValueError(
-                    "Every line in the input file should contain one sample identifier followed by the path. Refer README for the format."
-                )
-
-            row = re.split(": |; ", line.strip())
-            if any(i in row[0] for i in sample_id_not_allowed):
-                raise ValueError(
-                    "Sample identifiers in the input file contain special characters that are not allowed. Refer README for the format"
-                )
-
-            if row[1:]:
-                for file_path in row[1:]:
-                    if not os.path.exists(file_path):
-                        nonexistent_files.append(file_path)
-
-            # Make sure there is at least 1 sequence containing a k-mer
-            # If no k-mer found in the input file then we will just skip that input
-            if row[1:]:
-                if check_kmer_exists(row[1:], self.config["k"]):
-                    size = sum([os.stat(f).st_size for f in row[1:]])
-                    row.append(size)
-                    samples_path_list.append(row)
+        while not out_queue.empty():
+            chunk_samples_path_list, chunk_non_existent_files = out_queue.get()
+            samples_path_list += chunk_samples_path_list
+            non_existent_files += chunk_non_existent_files
 
         # Sort input files by their size
         samples_path_list.sort(key=lambda x: x[-1])
@@ -167,16 +203,15 @@ class ZarrStore:
                 f"Number of samples '{len(samples_path_list)}' is not equal to the number of sample identifiers '{len(sample_identifiers)}'"
             )
 
-        if nonexistent_files:
+        if non_existent_files:
             out_file = f"{self.config['output_directory']}/nonexistent_file_paths.txt"
             with open(out_file, "w") as non_file:
-                for non_f in nonexistent_files:
+                for non_f in non_existent_files:
                     non_file.write(f"{non_f}\n")
-                raise FileNotFoundError(
-                    f"Found non existant input file paths, check: {out_file}, please fix the input file and re-run MetaProFi."
-                )
+            raise FileNotFoundError(
+                f"Found non existant input file paths, check: {out_file}, please fix the input file and re-run MetaProFi."
+            )
 
-        file_handle.close()
         return samples_path_list, sample_identifiers
 
     def create_zarr(self):

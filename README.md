@@ -1,4 +1,4 @@
-# MetaProFi: A protein-based Bloom filter for storing and querying sequence data for accurate identification of functionally relevant genetic variants
+# MetaProFi: An ultrafast chunked Bloom filter for storing and querying protein and nucleotide sequence data for accurate identification of functionally relevant genetic variants
 
 * MetaProFi enables building _k_-mer indexes and allows exact and approximate searching of sequences in a fast and efficient way
 * MetaProFi supports both protein and nucleotide (canonical) _k_-mer indexing
@@ -14,13 +14,13 @@ Install MetaProFi as a command line tool using pip
 * Requirement: Linux OS (64 bit)
 
 * Setup:
- 
+
     * Install miniconda on Linux
 
-      ``` bash 
+      ``` bash
       wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh &&  Miniconda3-latest-Linux-x86_64.sh
       ```
-    
+
     * Download this git repo
 
       ``` bash
@@ -30,11 +30,11 @@ Install MetaProFi as a command line tool using pip
     * Install using pip
 
       ``` bash
-      conda create --name metaprofi python==3.7.7 pigz
+      conda create --name metaprofi python==3.8 pigz
       conda activate metaprofi
       pip install /path/to/metaprofi/git/repo/directory/
       ```
-    
+
 ## **Usage**
 
 * Run the following to get the list of available subcommands
@@ -45,7 +45,7 @@ Install MetaProFi as a command line tool using pip
 
 * Run the following to get MetaProFi version info
 
-  ``` 
+  ```
   metaprofi --version
   ```
 
@@ -212,7 +212,7 @@ Search/Query the sequence against the index
   Example1: Search for a sequence where at least 50% of k-mers are found (approximate search)
   metaprofi search_index -s 'AGCCGGCCCGCCCGCCCGGGTCTGACC' -i nucleotide -t 50
 
-  Example2: Search for a sequence where at least 75% of k-mers are found (approximate search) 
+  Example2: Search for a sequence where at least 75% of k-mers are found (approximate search)
   metaprofi search_index -s 'HIMHLIHIRAFFLDYNIYCIHRFNQSHRA' -i aminoacid -t 75
 
   Example3: Search for all sequences in the FASTA file (exact search)
@@ -224,7 +224,7 @@ Search/Query the sequence against the index
   Results: Can be found in a file named 'metaprofi_query_results_<datetime>_t<threshold>.txt' in the output directory path set in the config file*
   ```
 
-*NOTE: `sequence_type` in the config file will be used to determine if we are searching against the aminoacid or nucleotide index and to determine whether six frame translation needs to be performed on the input if nucleotide query is used* 
+*NOTE: `sequence_type` in the config file will be used to determine if we are searching against the aminoacid or nucleotide index and to determine whether six frame translation needs to be performed on the input if nucleotide query is used*
 
 #### **summary**
 
@@ -241,7 +241,7 @@ To get summary about the data
   metaprofi summary /path/to/config.yml
   ```
 
-## Full example: 
+## Full example:
 
 ### Create a MetaProFi index for all UniProt bacterial sequences
 
@@ -262,14 +262,14 @@ To get summary about the data
     sample_id2: /path/to/filename4.FASTA; /path/to/filename5.FASTA
     sample_id3: /path/to/filename6.FASTA
     ```
-  
+
   * MetaProFi sorts (ascending) the samples in the input file based on their storage size
   * MetaProFi discards samples that does not contain at least one _k_-mer
   * MetaProFi discards sequences that are smaller than _k_-mer size
 
 * Prepare `config.yml` refer [here](https://github.com/kalininalab/metaprofi#configyml)
 
-  * How to choose the size of the Bloom filter (m) 
+  * How to choose the size of the Bloom filter (m)
 
     ```
     # Example
@@ -283,9 +283,9 @@ To get summary about the data
     p = Probability of false positives (fraction between 0 and 1)
     NOTE: Smaller the probability of false positive (p) larger the size of the Bloom filter (m)
     ```
-  
+
   * How to choose the number of hash functions (h)
-    
+
     ```
     # Example
     from math import log
@@ -323,7 +323,7 @@ To get summary about the data
     k = 11
     pqmax = 10**-5
     qlmin = 50
-  
+
     per_query_false_positives = N * ((pqmax / N) ** (1 / (qlmin - k + 1))) ** (qlmin - k + 1)
 
     where,
@@ -332,7 +332,7 @@ To get summary about the data
     k = Size of the k-mer
     qlmin = Shortest length of the query sequence to be used
     NOTE: qlmin must be greater than or equal to k
-    ```    
+    ```
 
 * To build Bloom filter matrix and index
 
